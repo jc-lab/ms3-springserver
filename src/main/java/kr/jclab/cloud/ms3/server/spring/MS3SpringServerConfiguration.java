@@ -20,9 +20,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.ContentNegotiationConfigurer;
+import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
-public class MS3SpringServerConfiguration implements BeanPostProcessor {
+public class MS3SpringServerConfiguration implements BeanPostProcessor, WebMvcConfigurer {
 
     @Autowired
     private ApplicationContext applicationContext;
@@ -38,5 +41,11 @@ public class MS3SpringServerConfiguration implements BeanPostProcessor {
             applicationContext.getAutowireCapableBeanFactory().initializeBean(server, null);
         }
         return bean;
+    }
+
+    @Override
+    public void configureContentNegotiation(ContentNegotiationConfigurer configurer) {
+        // For prevent a HttpMediaTypeNotAcceptableException
+        configurer.favorPathExtension(false);
     }
 }
