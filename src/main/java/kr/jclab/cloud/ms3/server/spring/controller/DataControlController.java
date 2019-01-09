@@ -15,8 +15,10 @@
  */
 package kr.jclab.cloud.ms3.server.spring.controller;
 
+import kr.jclab.cloud.ms3.common.dto.BucketsListDTO;
 import kr.jclab.cloud.ms3.common.dto.ListObjectsDTO;
 import kr.jclab.cloud.ms3.common.dto.GenerateUriDTO;
+import kr.jclab.cloud.ms3.common.dto.ResultBase;
 import kr.jclab.cloud.ms3.server.spring.MS3SpringServer;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,6 +27,9 @@ import org.springframework.web.servlet.mvc.AbstractController;
 
 import javax.servlet.http.HttpServletRequest;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.attribute.BasicFileAttributes;
 
 @RestController
 @RequestMapping(path = "/api")
@@ -35,8 +40,47 @@ public class DataControlController {
         this.ms3SpringServer = ms3SpringServer;
     }
 
+    @RequestMapping(path = "/buckets/list")
+    public ResponseEntity<BucketsListDTO.Response> bucketsList() {
+        BucketsListDTO.Response responseBody = new BucketsListDTO.Response();
+        File dataDir = ms3SpringServer.getDataDirectory();
+
+        for(File file : dataDir.listFiles()) {
+            if(file.isDirectory()) {
+                try {
+                    BasicFileAttributes attr = Files.readAttributes(file.toPath(), BasicFileAttributes.class);
+                    BucketsListDTO.BucketSummary bucketSummary = new BucketsListDTO.BucketSummary();
+                    bucketSummary.bucketName = file.getName();
+                    bucketSummary.creationTime = attr.creationTime().toMillis();
+                    bucketSummary.lastModified = file.lastModified();
+                    responseBody.list.add(bucketSummary);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        return new ResponseEntity<>(responseBody, HttpStatus.OK);
+    }
+
+    @RequestMapping(path = "/buckets/create/{bucket}", method = RequestMethod.PUT)
+    public ResponseEntity<ResultBase> bucketCreate(@PathVariable("bucket") String bucket) {
+        ResultBase responseBody = new ResultBase();
+        File bucketDir = ms3SpringServer.getBucketDirectory(bucket);
+        if(bucketDir.exists()) {
+            responseBody.code = HttpStatus.ACCEPTED.value();
+        }else if(bucketDir.mkdir()) {
+            responseBody.code = HttpStatus.OK.value();
+        }else{
+            responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
+            return new ResponseEntity(responseBody, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        return new ResponseEntity(responseBody, HttpStatus.OK);
+    }
+
     @RequestMapping(path = "/bucket/list/{bucket}", method = RequestMethod.GET)
-    public ResponseEntity<ListObjectsDTO.Response> buckerList(@PathVariable("bucket") String bucket) {
+    public ResponseEntity<ListObjectsDTO.Response> bucketList(@PathVariable("bucket") String bucket) {
         ListObjectsDTO.Response responseBody = new ListObjectsDTO.Response();
         File bucketDir = ms3SpringServer.getBucketDirectory(bucket);
 

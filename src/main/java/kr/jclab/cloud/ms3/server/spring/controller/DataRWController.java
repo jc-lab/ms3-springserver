@@ -19,6 +19,7 @@ import com.fasterxml.jackson.core.JsonGenerationException;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import kr.jclab.cloud.ms3.common.dto.PutObjectDTO;
 import kr.jclab.cloud.ms3.common.dto.ResultBase;
 import kr.jclab.cloud.ms3.common.model.ObjectMetadata;
 import kr.jclab.cloud.ms3.server.spring.MS3SpringServer;
@@ -154,6 +155,89 @@ public class DataRWController {
         return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
+    @RequestMapping(path =  "/bucket/object/{bucket}/{key:.+}", method = RequestMethod.PUT)
+    public ResponseEntity<PutObjectDTO.Response> putObject(@PathVariable("bucket") String bucket, @PathVariable("key") String key, HttpServletRequest request, InputStream dataStream) {
+        PutObjectDTO.Response responseBody = new PutObjectDTO.Response();
+        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
+        boolean isNewFile = !objectFile.dataFile.exists();
+        do {
+            int metadataSize;
+            byte[] metadataBin = null;
+            FileOutputStream metadataOutputStream = null;
+            FileOutputStream contentOutputStream = null;
+            try {
+                metadataSize = Integer.parseInt(request.getHeader("MS3-METADATA-SIZE"));
+            } catch(NumberFormatException e) {
+                responseBody.code = HttpStatus.FORBIDDEN.value();
+                responseBody.message = "No MS3-METADATA-SIZE header";
+                break;
+            }
+            if (isNewFile) {
+                try {
+                    if (!objectFile.dataFile.createNewFile()) {
+                        responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
+                        responseBody.message = "create file failed";
+                        break;
+                    }
+                } catch (IOException e) {
+                    responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
+                    responseBody.message = e.getMessage();
+                    break;
+                }
+            }
+            try {
+                if (metadataSize > 0) {
+                    int readlen;
+                    int pos = 0;
+                    byte[] buffer = new byte[metadataSize];
+                    metadataOutputStream = new FileOutputStream(objectFile.metadataFile);
+                    while ((pos < metadataSize) && (readlen = dataStream.read(buffer, 0, metadataSize - pos)) > 0) {
+                        pos += readlen;
+                        metadataOutputStream.write(buffer, 0, readlen);
+                    }
+                    if(pos != metadataSize) {
+                        responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
+                        responseBody.message = "metadata read failed";
+                        break;
+                    }
+                }
+                {
+                    int readlen;
+                    byte[] buffer = new byte[1048576];
+                    contentOutputStream = new FileOutputStream(objectFile.dataFile);
+                    while ((readlen = dataStream.read(buffer)) > 0) {
+                        contentOutputStream.write(buffer, 0, readlen);
+                    }
+                }
+            }catch(IOException e) {
+                responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
+                responseBody.message = e.getMessage();
+                break;
+            } finally {
+                if(metadataOutputStream != null) {
+                    try { metadataOutputStream.close(); } catch (IOException e) { }
+                }
+                if(contentOutputStream != null) {
+                    try { contentOutputStream.close(); } catch (IOException e) { }
+                }
+            }
+
+            responseBody.code = HttpStatus.OK.value();
+        } while (false);
+
+        if(responseBody.code != HttpStatus.OK.value()) {
+            if(isNewFile) {
+                if (objectFile.dataFile.exists())
+                    objectFile.dataFile.delete();
+                if (objectFile.metadataFile.exists())
+                    objectFile.metadataFile.delete();
+            }
+            return new ResponseEntity<>(responseBody, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        return new ResponseEntity<>(responseBody, HttpStatus.OK);
+    }
+
     @RequestMapping(path =  "/bucket/metadata/{bucket}/{key:.+}", method = RequestMethod.GET)
     public ResponseEntity<InputStreamResource> getMetadata(@PathVariable("bucket") String bucket, @PathVariable("key") String key) {
         MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
@@ -162,7 +246,7 @@ public class DataRWController {
         if(!objectFile.dataFile.exists())
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         if(!objectFile.metadataFile.exists())
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            return new ResponseEntity<>(HttpStatus.OK);
         try {
             return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.metadataFile)), HttpStatus.OK);
         } catch (FileNotFoundException e) {
