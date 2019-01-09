@@ -129,6 +129,11 @@ public class MS3SpringServer {
         }
     }
 
+    public File getDataDirectory() {
+        File dataDir = new File(resourceDirectory, "data/");
+        return dataDir;
+    }
+
     public File getBucketDirectory(String bucket) {
         File bucketDir = new File(this.resourceDirectory, "data/" + bucket);
         return bucketDir;
