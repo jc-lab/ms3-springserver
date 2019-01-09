@@ -6,7 +6,7 @@
 
     <groupId>kr.jclab.cloud</groupId>
     <artifactId>ms3-springserver</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
 
     <name>ms3-springserver</name>
     <description></description>
