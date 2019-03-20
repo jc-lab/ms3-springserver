@@ -49,24 +49,26 @@ public class DataRWController {
 
     @RequestMapping(path =  "/bucket/data/{bucket}/{key:.+}", method = RequestMethod.GET)
     public ResponseEntity<InputStreamResource> getData(@PathVariable("bucket") String bucket, @PathVariable("key") String key) {
-        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
-        if(objectFile == null)
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        if(!objectFile.dataFile.exists())
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         try {
-            ObjectMetadata objectMetadata = ms3SpringServer.getObjectMetadata(objectFile);
+            MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key, ms3SpringServer.getMetadataObjectMapper(), false);
+            if(objectFile == null)
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            if(!objectFile.getDataFile().exists())
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+
             HttpHeaders httpHeaders = new HttpHeaders();
-            if(objectMetadata != null) {
-                String contentType = objectMetadata.getContentType();
-                String contentEncoding = objectMetadata.getContentEncoding();
+            if(objectFile.getObjectMetadata() != null) {
+                String contentType = objectFile.getObjectMetadata().getContentType();
+                String contentEncoding = objectFile.getObjectMetadata().getContentEncoding();
                 if(contentType != null)
                     httpHeaders.set("Content-Type", contentType);
                 if(contentEncoding != null)
                     httpHeaders.set("Content-Encoding", contentEncoding);
             }
-            return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.dataFile)), httpHeaders, HttpStatus.OK);
+            return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.getDataFile())), httpHeaders, HttpStatus.OK);
         } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
             e.printStackTrace();
         }
         return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);
@@ -75,15 +77,13 @@ public class DataRWController {
     @RequestMapping(path =  "/bucket/data/{bucket}/{key:.+}", method = RequestMethod.PUT)
     public ResponseEntity<ResultBase> putData(HttpServletRequest request, @PathVariable("bucket") String bucket, @PathVariable("key") String key, InputStream dataStream) {
         ResultBase result = new ResultBase();
-        ObjectMapper objectMapper = new ObjectMapper();
-        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
         ObjectMetadata objectMetadata = new ObjectMetadata();
-        FileOutputStream fosMeta = null;
         FileOutputStream fosData = null;
-
-        if(objectFile == null)
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         try {
+            MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key, ms3SpringServer.getMetadataObjectMapper(), true);
+            if(objectFile == null)
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+
             byte[] buffer = new byte[16 * 1048576];
             int readlen;
 
@@ -94,10 +94,9 @@ public class DataRWController {
             if(contentEncoding != null)
                 objectMetadata.setContentEncoding(contentEncoding);
 
-            fosMeta = new FileOutputStream(objectFile.metadataFile);
-            objectMapper.writeValue(fosMeta, objectMetadata);
+            objectFile.setAndSaveObjectMetadata(objectMetadata);
 
-            fosData = new FileOutputStream(objectFile.dataFile);
+            fosData = new FileOutputStream(objectFile.getDataFile());
             while(dataStream.available() > 0 && (readlen = dataStream.read(buffer)) > 0) {
                 fosData.write(buffer, 0, readlen);
             }
@@ -113,9 +112,6 @@ public class DataRWController {
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
-            if(fosMeta != null) {
-                try { fosMeta.close(); }catch (IOException e) {}
-            }
             if(fosData != null) {
                 try { fosData.close(); }catch (IOException e) {}
             }
@@ -125,24 +121,28 @@ public class DataRWController {
 
     @RequestMapping(path =  "/bucket/object/{bucket}/{key:.+}", method = RequestMethod.GET)
     public ResponseEntity<InputStreamResource> getObject(@PathVariable("bucket") String bucket, @PathVariable("key") String key) {
-        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
-        if(objectFile == null)
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        if(!objectFile.dataFile.exists())
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         try {
+            MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key, ms3SpringServer.getMetadataObjectMapper(), false);
+            if(objectFile == null)
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            if(!objectFile.getDataFile().exists())
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+
             byte[] metadata = null;
             int metadataSize = 0;
             HttpHeaders httpHeaders = new HttpHeaders();
 
-            if(objectFile.metadataFile.exists()) {
-                ObjectMapper objectMapper = new ObjectMapper().configure(FAIL_ON_UNKNOWN_PROPERTIES, false);
-                ObjectMetadata objectMetadata = objectMapper.readValue(objectFile.metadataFile, ObjectMetadata.class);
-                metadata = objectMapper.writeValueAsBytes(objectMetadata);
+            if(objectFile.getObjectMetadata() != null) {
+                ObjectMetadata objectMetadata = objectFile.getObjectMetadata();
+                metadata = ms3SpringServer.getMetadataObjectMapper().writeValueAsBytes(objectMetadata);
                 metadataSize = metadata.length;
             }
+
+            if(!objectFile.getDataFile().exists())
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+
             httpHeaders.set("MS3-METADATA-SIZE", String.valueOf(metadataSize));
-            return new ResponseEntity<>(new InputStreamResource(new ObjectResponseInputStream(metadata, new FileInputStream(objectFile.dataFile))), httpHeaders, HttpStatus.OK);
+            return new ResponseEntity<>(new InputStreamResource(new ObjectResponseInputStream(metadata, new FileInputStream(objectFile.getDataFile()))), httpHeaders, HttpStatus.OK);
         } catch (FileNotFoundException e) {
             e.printStackTrace();
         } catch (JsonParseException e) {
@@ -156,15 +156,18 @@ public class DataRWController {
     }
 
     @RequestMapping(path =  "/bucket/object/{bucket}/{key:.+}", method = RequestMethod.PUT)
-    public ResponseEntity<PutObjectDTO.Response> putObject(@PathVariable("bucket") String bucket, @PathVariable("key") String key, HttpServletRequest request, InputStream dataStream) {
+    public ResponseEntity<PutObjectDTO.Response> putObject(@PathVariable("bucket") String bucket, @PathVariable("key") String key, HttpServletRequest request, InputStream dataStream) throws IOException {
         PutObjectDTO.Response responseBody = new PutObjectDTO.Response();
-        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
-        boolean isNewFile = !objectFile.dataFile.exists();
+        MS3ObjectFile objectFile = null;
+        boolean isNewFile = false;
         do {
             int metadataSize;
-            byte[] metadataBin = null;
-            FileOutputStream metadataOutputStream = null;
+            byte[] metadataBin;
+            int pos = 0;
+            int readlen;
+            ObjectMetadata objectMetadata = null;
             FileOutputStream contentOutputStream = null;
+
             try {
                 metadataSize = Integer.parseInt(request.getHeader("MS3-METADATA-SIZE"));
             } catch(NumberFormatException e) {
@@ -172,9 +175,21 @@ public class DataRWController {
                 responseBody.message = "No MS3-METADATA-SIZE header";
                 break;
             }
+            if(metadataSize > 0) {
+                metadataBin = new byte[metadataSize];
+                while ((pos < metadataSize) && (readlen = dataStream.read(metadataBin, pos, metadataSize - pos)) > 0) {
+                    pos += readlen;
+                }
+                objectMetadata = ms3SpringServer.getMetadataObjectMapper().readValue(metadataBin, ObjectMetadata.class);
+            }
+
+            objectFile = ms3SpringServer.getMS3Object(bucket, key, ms3SpringServer.getMetadataObjectMapper(), true);
+            objectFile.setAndSaveObjectMetadata(objectMetadata);
+            isNewFile = !objectFile.getDataFile().exists();
+
             if (isNewFile) {
                 try {
-                    if (!objectFile.dataFile.createNewFile()) {
+                    if (!objectFile.getDataFile().createNewFile()) {
                         responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
                         responseBody.message = "create file failed";
                         break;
@@ -186,37 +201,16 @@ public class DataRWController {
                 }
             }
             try {
-                if (metadataSize > 0) {
-                    int readlen;
-                    int pos = 0;
-                    byte[] buffer = new byte[metadataSize];
-                    metadataOutputStream = new FileOutputStream(objectFile.metadataFile);
-                    while ((pos < metadataSize) && (readlen = dataStream.read(buffer, 0, metadataSize - pos)) > 0) {
-                        pos += readlen;
-                        metadataOutputStream.write(buffer, 0, readlen);
-                    }
-                    if(pos != metadataSize) {
-                        responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
-                        responseBody.message = "metadata read failed";
-                        break;
-                    }
-                }
-                {
-                    int readlen;
-                    byte[] buffer = new byte[1048576];
-                    contentOutputStream = new FileOutputStream(objectFile.dataFile);
-                    while ((readlen = dataStream.read(buffer)) > 0) {
-                        contentOutputStream.write(buffer, 0, readlen);
-                    }
+                byte[] buffer = new byte[1048576];
+                contentOutputStream = new FileOutputStream(objectFile.getDataFile());
+                while ((readlen = dataStream.read(buffer)) > 0) {
+                    contentOutputStream.write(buffer, 0, readlen);
                 }
             }catch(IOException e) {
                 responseBody.code = HttpStatus.SERVICE_UNAVAILABLE.value();
                 responseBody.message = e.getMessage();
                 break;
             } finally {
-                if(metadataOutputStream != null) {
-                    try { metadataOutputStream.close(); } catch (IOException e) { }
-                }
                 if(contentOutputStream != null) {
                     try { contentOutputStream.close(); } catch (IOException e) { }
                 }
@@ -226,9 +220,9 @@ public class DataRWController {
         } while (false);
 
         if(responseBody.code != HttpStatus.OK.value()) {
-            if(isNewFile) {
-                if (objectFile.dataFile.exists())
-                    objectFile.dataFile.delete();
+            if(isNewFile && objectFile != null) {
+                if (objectFile.getDataFile().exists())
+                    objectFile.getDataFile().delete();
                 if (objectFile.metadataFile.exists())
                     objectFile.metadataFile.delete();
             }
@@ -240,16 +234,18 @@ public class DataRWController {
 
     @RequestMapping(path =  "/bucket/metadata/{bucket}/{key:.+}", method = RequestMethod.GET)
     public ResponseEntity<InputStreamResource> getMetadata(@PathVariable("bucket") String bucket, @PathVariable("key") String key) {
-        MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key);
-        if(objectFile == null)
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        if(!objectFile.dataFile.exists())
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        if(!objectFile.metadataFile.exists())
-            return new ResponseEntity<>(HttpStatus.OK);
         try {
+            MS3ObjectFile objectFile = ms3SpringServer.getMS3Object(bucket, key, ms3SpringServer.getMetadataObjectMapper(), false);
+            if(objectFile == null)
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            if(!objectFile.getDataFile().exists())
+                return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            if(!objectFile.metadataFile.exists())
+                return new ResponseEntity<>(HttpStatus.OK);
             return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.metadataFile)), HttpStatus.OK);
         } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
             e.printStackTrace();
         }
         return new ResponseEntity<>(HttpStatus.SERVICE_UNAVAILABLE);

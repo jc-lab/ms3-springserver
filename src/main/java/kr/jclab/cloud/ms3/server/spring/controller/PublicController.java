@@ -40,10 +40,10 @@ public class PublicController {
 
     @RequestMapping(path =  "/{shareid}")
     public ResponseEntity<InputStreamResource> getByShareId(@PathVariable("shareid") String shareid) {
-        MS3ObjectFile objectFile = ms3SpringServer.findMS3ObjectByShareid(shareid);
+        MS3ObjectFile objectFile = ms3SpringServer.findMS3ObjectByShareid(shareid, ms3SpringServer.getMetadataObjectMapper());
         if(objectFile == null)
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        if(!objectFile.dataFile.exists())
+        if(!objectFile.getDataFile().exists())
             return new ResponseEntity<>(HttpStatus.NOT_FOUND);
         try {
             ObjectMetadata objectMetadata = ms3SpringServer.getObjectMetadata(objectFile);
@@ -56,7 +56,7 @@ public class PublicController {
                 if(contentEncoding != null)
                     httpHeaders.set("Content-Encoding", contentEncoding);
             }
-            return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.dataFile)), httpHeaders, HttpStatus.OK);
+            return new ResponseEntity<>(new InputStreamResource(new FileInputStream(objectFile.getDataFile())), httpHeaders, HttpStatus.OK);
         } catch (FileNotFoundException e) {
             e.printStackTrace();
         }

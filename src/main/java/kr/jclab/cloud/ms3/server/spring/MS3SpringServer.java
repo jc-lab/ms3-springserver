@@ -40,6 +40,8 @@ import java.sql.*;
 import java.util.Properties;
 import java.util.UUID;
 
+import static com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES;
+
 public class MS3SpringServer {
 
     static {
@@ -61,6 +63,8 @@ public class MS3SpringServer {
     private File resourceDirectory;
 
     private Connection dbConnection;
+
+    private ObjectMapper metadataObjectMapper = new ObjectMapper().configure(FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     MS3SpringServer(MS3SpringServerConfigurerAdapter configurerAdapter) {
         this.configurerAdapter = configurerAdapter;
@@ -159,12 +163,12 @@ public class MS3SpringServer {
         return false;
     }
 
-    public MS3ObjectFile getMS3Object(String bucket, String key) {
-        MS3ObjectFile objectFile = new MS3ObjectFile(this.resourceDirectory, bucket, key);
+    public MS3ObjectFile getMS3Object(String bucket, String key, ObjectMapper objectMapper, boolean newFile) throws IOException {
+        MS3ObjectFile objectFile = new MS3ObjectFile(this.resourceDirectory, bucket, key, objectMapper, newFile);
         return objectFile;
     }
 
-    public MS3ObjectFile findMS3ObjectByShareid(String shareid) {
+    public MS3ObjectFile findMS3ObjectByShareid(String shareid, ObjectMapper objectMapper) {
         try {
             PreparedStatement statment = this.dbConnection.prepareStatement("SELECT `bucket`,`key` FROM share_object WHERE shareid=?");
             statment.setString(1, shareid);
@@ -172,13 +176,15 @@ public class MS3SpringServer {
             if(resultSet.next()) {
                 String bucket = resultSet.getString(1);
                 String key = resultSet.getString(2);
-                MS3ObjectFile objectFile = new MS3ObjectFile(this.resourceDirectory, bucket, key);
-                if(objectFile.dataFile.exists())
+                MS3ObjectFile objectFile = new MS3ObjectFile(this.resourceDirectory, bucket, key, objectMapper, false);
+                if(objectFile.getDataFile().exists())
                 {
                     return objectFile;
                 }
             }
         } catch (SQLException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
             e.printStackTrace();
         }
         return null;
@@ -243,5 +249,9 @@ public class MS3SpringServer {
             return shareid;
         }
 
+    }
+
+    public ObjectMapper getMetadataObjectMapper() {
+        return metadataObjectMapper;
     }
 }
